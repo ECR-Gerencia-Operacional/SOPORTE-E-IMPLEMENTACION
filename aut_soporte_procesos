@@ -1,0 +1,1152 @@
+import os
+import re
+from math import ceil
+from datetime import datetime
+
+import pandas as pd
+from tqdm import tqdm
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+
+import win32com.client as win32
+
+# -------------------------------------------------
+# MAPEOS Y CONSTANTES
+# -------------------------------------------------
+
+# Mapeo para MÓDULO PREVIRED (Botón 1)
+columnas_a_renombrar_previred = {
+    "Col_0": "rut",
+    "Col_1": "dv",
+    "Col_2": "ape_pat",
+    "Col_3": "ape_mat",
+    "Col_4": "nombres",
+    "Col_14": "cod_mov",
+    "Col_15": "Fecha_Desde",
+    "Col_16": "Fecha_Hasta",
+    "Col_25": "nom_AFP",
+    "Col_74": "cod_inst_salud",
+    "Col_102": "rut_pag_subs",
+    "Col_103": "dv_pag_subs",
+    "Línea": "Linea",
+    5: "sexo",
+    6: "nacion",
+    7: "tipo_pago",
+    8: "remu_desde",
+    9: "remu_hasta",
+    10: "reg_previ",
+    11: "tipo_trab",
+    12: "dias_trab",
+    13: "tipo_linea",
+    17: "Tramo_Fam",
+    18: "num_car_sim",
+    19: "num_car_mat",
+    20: "num_car_inv",
+    21: "asig_fam",
+    22: "asig_fam_ret",
+    23: "reint_cargas",
+    24: "sub_trab_jov",
+    26: "impo_afp",
+    27: "cot_obli_afp",
+    28: "aporte_sis",
+    29: "ahorro_afp",
+    30: "sust_afp",
+    31: "tasa_pac_afp",
+    32: "aporte_indem",
+    33: "num_per_sust",
+    34: "per_desde_sust",
+    35: "per_hasta_sust",
+    36: "trab_pesado",
+    37: "porc_trab_pesado",
+    38: "cot_trab_pesado",
+    39: "inst_apvi",
+    40: "num_contra_apvi",
+    41: "forma_pago_apvi",
+    42: "cotiza_apvi",
+    43: "cot_dep_conv",
+    44: "inst_apvc",
+    45: "num_contra_apvc",
+    46: "forma_pago_apvc",
+    47: "cotiza_apvc",
+    48: "cot_emp_apvc",
+    49: "rut_afi_volun",
+    50: "dv_afi_volun",
+    51: "ape_pat_volun",
+    52: "ape_mat_volun",
+    53: "nombre_volun",
+    54: "cod_mov_per_volun",
+    55: "fec_desde_volun",
+    56: "fec_hasta_volun",
+    57: "cod_afp_volun",
+    58: "monto_cap_volun",
+    59: "monto_aho_vol",
+    60: "num_per_cotiza",
+    61: "cod_ex_caja",
+    62: "tasa_ex_caja",
+    63: "renta_imp_fonasa",
+    64: "cot_INP",
+    65: "Renta_imp_des",
+    66: "cod_ex_caja_des",
+    67: "tasa_ex_caja_des",
+    68: "cot_desahucio",
+    69: "cotiza_fonasa",
+    70: "cot_acc_trab_inp",
+    71: "boni_ley",
+    72: "desc_cargas_fam_inp",
+    73: "bonos_gob",
+    75: "num_FUN",
+    76: "impo_isapre",
+    77: "moneda_plan",
+    78: "cot_pactada",
+    79: "cot_obli_isa",
+    80: "cot_ad_vol",
+    81: "monto_ges",
+    82: "cod_CCAF",
+    83: "impo_ccaf",
+    84: "Cred_per_CCAF",
+    85: "Desc_Dental",
+    86: "desc_leassing",
+    87: "desc_seg_vida",
+    88: "otros_desc_ccaf",
+    89: "cot_CCAF",
+    90: "Desc_Car_fam",
+    91: "otros_desc_ccaf1",
+    92: "otros_desc_ccaf2",
+    93: "bono_gob_ccaf",
+    94: "cod_sucur_ccaf",
+    95: "cod_mutual",
+    96: "impo_mutual",
+    97: "cotiza_mutual",
+    98: "sucur_mutual",
+    99: "Renta_impo_SC",
+    100: "Aporte_trab_SC",
+    101: "aporte_emp_SC",
+    104: "centro_costo"
+}
+
+map_afp_previred = {
+    0: "No esta en AFP",
+    3: "76240079",
+    5: "98000100",
+    8: "76265736",
+    7: "61603000",
+    29: "98001200",
+    33: "98000000",
+    34: "76762250",
+    35: "76960424"
+}
+
+valores_cod_mov_validos = [2, 3, 4, 6, 10, 11, 12]
+
+# Mapeo para MÓDULO SIMPLE (Botón 2)
+columnas_a_renombrar_simple = {
+    "Col_0": "rut",
+    "Col_1": "dv",
+    "Col_2": "ape_pat",
+    "Col_3": "ape_mat",
+    "Col_4": "nombres",
+    "Col_14": "cod_mov",
+    "Col_15": "Fecha_Desde",
+    "Col_16": "Fecha_Hasta",
+    "Col_25": "nom_AFP",
+    "Col_74": "cod_inst_salud",
+    "Col_102": "rut_pag_subs",
+    "Col_103": "dv_pag_subs"
+}
+
+map_afp_simple = {
+    "03": "76240079",
+    "05": "98000100",
+    "08": "76265736",
+    "07": "61603000",
+    "29": "98001200",
+    "33": "98000000",
+    "34": "76762250",
+    "35": "76960424",
+}
+
+# Mapeo para MÓDULO CAMPOS CLAVE (Botón 3)
+columnas_a_renombrar_campos_clave = {
+    "Col_0": "rut",
+    "Col_1": "dv",
+    "Col_2": "ape_pat",
+    "Col_3": "ape_mat",
+    "Col_4": "nombres",
+    "Col_14": "cod_mov",
+    "Col_15": "Fecha_Desde",
+    "Col_16": "Fecha_Hasta",
+    "Col_25": "nom_AFP",
+    "Col_74": "cod_inst_salud",
+    "Col_102": "rut_pag_subs",
+    "Col_103": "dv_pag_subs"
+}
+
+# -------------------------------------------------
+# FUNCIONES COMPARTIDAS
+# -------------------------------------------------
+def encontrar_columna_real(df, llave):
+    """
+    Encuentra la columna real en df que corresponde a 'Col_x' o índice numérico.
+    """
+    if llave in df.columns:
+        return llave
+
+    m = re.search(r'(\d+)', str(llave))
+    if m:
+        num = int(m.group(1))
+        if num in df.columns:
+            return num
+        for col in df.columns:
+            s = str(col)
+            mm = re.search(r'(\d+)', s)
+            if mm and int(mm.group(1)) == num:
+                return col
+
+    if str(llave).isdigit():
+        num = int(llave)
+        if num in df.columns:
+            return num
+        if num < len(df.columns):
+            return num
+
+    return None
+
+# -------------------------------------------------
+# MÓDULOS / LÓGICA
+# -------------------------------------------------
+def generar_reportes_sap_previred():
+    messagebox.showinfo(
+        "Generador de Reportes SAP PREVIRED",
+        "Selecciona la carpeta que contiene los archivos TXT exportados desde SAP.\n\n"
+        "Se crearán archivos Excel completos y reducidos con el mes y año en el nombre."
+    )
+
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con los archivos TXT de SAP")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    fecha_actual = datetime.now()
+    mes_anio = fecha_actual.strftime("%m_%Y")  # MM_AAAA
+
+    for archivo in tqdm(archivos_txt, desc="Procesando archivos TXT (PREVIRED)"):
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+
+        try:
+            df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+        except UnicodeDecodeError:
+            df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+
+        df_completo = df.copy()
+
+        for llave, nuevo_nombre in columnas_a_renombrar_previred.items():
+            col_real = encontrar_columna_real(df_completo, llave)
+            if col_real is not None:
+                df_completo.rename(columns={col_real: nuevo_nombre}, inplace=True)
+
+        if "nom_AFP" in df_completo.columns:
+            df_completo["rut_pag_subs"] = df_completo["nom_AFP"].map(map_afp_previred)
+        else:
+            df_completo["rut_pag_subs"] = None
+
+        if "cod_mov" in df_completo.columns:
+            df_completo["cod_mov"] = pd.to_numeric(df_completo["cod_mov"], errors="coerce")
+            df_completo = df_completo[df_completo["cod_mov"].isin(valores_cod_mov_validos)]
+
+        ruta_excel_completo = os.path.splitext(ruta_txt)[0] + f"_completo_{mes_anio}.xlsx"
+        df_completo.to_excel(ruta_excel_completo, index=False)
+
+        columnas_seleccionadas = [
+            "rut", "dv", "ape_pat", "ape_mat", "nombres",
+            "cod_mov", "Fecha_Desde", "Fecha_Hasta", "nom_AFP",
+            "cod_inst_salud", "rut_pag_subs", "dv_pag_subs"
+        ]
+        df_sel = df_completo[[c for c in columnas_seleccionadas if c in df_completo.columns]].copy()
+
+        ruta_excel_sel = os.path.splitext(ruta_txt)[0] + f"_seleccionadas_{mes_anio}.xlsx"
+        df_sel.to_excel(ruta_excel_sel, index=False)
+
+    messagebox.showinfo(
+        "Proceso completado ✅",
+        "Los archivos Excel PREVIRED han sido generados correctamente.\n\n"
+        "Se crearon versiones completas y reducidas con el mes y año en el nombre."
+    )
+
+def conversor_txt_sap_excel_modo_simple():
+    messagebox.showinfo(
+        "Conversor TXT SAP → Excel (Modo Simple)",
+        "Selecciona la carpeta que contiene los archivos TXT exportados desde SAP.\n\n"
+        "Se generarán archivos Excel completos y con columnas seleccionadas (modo simple)."
+    )
+
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con los archivos TXT de SAP")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    for archivo in tqdm(archivos_txt, desc="Procesando archivos TXT (Modo Simple)"):
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+
+        try:
+            df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+            except Exception as e:
+                print(f"Error leyendo {archivo}: {e}")
+                continue
+        except Exception as e:
+            print(f"Error leyendo {archivo}: {e}")
+            continue
+
+        df_completo = df.copy()
+
+        for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+            col_real = encontrar_columna_real(df_completo, llave)
+            if col_real is not None:
+                df_completo.rename(columns={col_real: nuevo_nombre}, inplace=True)
+
+        if "nom_AFP" in df_completo.columns:
+            df_completo["rut_pag_subs"] = df_completo["nom_AFP"].map(map_afp_simple)
+        else:
+            df_completo["rut_pag_subs"] = None
+
+        ruta_excel_completo = os.path.splitext(ruta_txt)[0] + "_completo.xlsx"
+        if os.path.exists(ruta_excel_completo):
+            ruta_excel_completo = os.path.splitext(ruta_txt)[0] + "_completo_nuevo.xlsx"
+        df_completo.to_excel(ruta_excel_completo, index=False)
+
+        labels_a_seleccionar = []
+        mapa_renombrar = {}
+        for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+            col_real = encontrar_columna_real(df, llave)
+            if col_real is None:
+                df[llave] = pd.NA
+                col_real = llave
+                print(f"  - Advertencia: {llave} no encontrada en {archivo}, se creará vacía.")
+            labels_a_seleccionar.append(col_real)
+            mapa_renombrar[col_real] = nuevo_nombre
+
+        df_sel = df[labels_a_seleccionar].copy()
+        df_sel.rename(columns=mapa_renombrar, inplace=True)
+
+        if "nom_AFP" in df_sel.columns:
+            df_sel["rut_pag_subs"] = df_sel["nom_AFP"].map(map_afp_simple)
+        else:
+            df_sel["rut_pag_subs"] = None
+
+        ruta_excel_sel = os.path.splitext(ruta_txt)[0] + "_seleccionadas.xlsx"
+        if os.path.exists(ruta_excel_sel):
+            ruta_excel_sel = os.path.splitext(ruta_txt)[0] + "_seleccionadas_nuevo.xlsx"
+        df_sel.to_excel(ruta_excel_sel, index=False)
+
+    messagebox.showinfo(
+        "Proceso terminado ✅",
+        "Se generaron archivos completos y seleccionados (modo simple) para cada TXT."
+    )
+
+def conversor_txt_sap_excel_campos_clave():
+    ruta_carpeta = filedialog.askdirectory(
+        title="Selecciona la carpeta con los archivos TXT de SAP"
+    )
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    for archivo in archivos_txt:
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+        print(f"\nProcesando: {archivo}")
+
+        try:
+            df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+            except Exception as e:
+                print(f"  Error leyendo {archivo}: {e}")
+                continue
+        except Exception as e:
+            print(f"  Error leyendo {archivo}: {e}")
+            continue
+
+        labels_a_seleccionar = []
+        mapa_renombrar = {}
+
+        for llave, nuevo_nombre in columnas_a_renombrar_campos_clave.items():
+            col_real = encontrar_columna_real(df, llave)
+            if col_real is None:
+                print(f"  - Advertencia: {llave} no encontrada y será omitida.")
+            else:
+                labels_a_seleccionar.append(col_real)
+                mapa_renombrar[col_real] = nuevo_nombre
+
+        if not labels_a_seleccionar:
+            print("  - Ninguna de las columnas solicitadas fue encontrada en este archivo. Se omite.")
+            continue
+
+        df_sel = df[labels_a_seleccionar].copy()
+        df_sel.rename(columns=mapa_renombrar, inplace=True)
+
+        ruta_excel = os.path.splitext(ruta_txt)[0] + ".xlsx"
+        df_sel.to_excel(ruta_excel, index=False)
+        print(f"  ✅ Guardado: {ruta_excel}")
+
+    messagebox.showinfo(
+        "Proceso terminado ✅",
+        "Se generaron archivos Excel con columnas clave para cada TXT."
+    )
+
+def dividir_excels_en_bloques_50():
+    ruta_carpeta = filedialog.askdirectory(
+        title="Selecciona la carpeta con archivos Excel"
+    )
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_xlsx = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".xlsx")]
+    if not archivos_xlsx:
+        messagebox.showwarning("Sin archivos Excel", "No se encontraron archivos .xlsx en la carpeta seleccionada.")
+        return
+
+    try:
+        excel = win32.Dispatch("Excel.Application")
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo iniciar Excel COM:\n{e}")
+        return
+
+    excel.Visible = False
+    excel.DisplayAlerts = False
+
+    try:
+        maxRowsPerFile = 50
+        headerRow = 1
+
+        for archivo in archivos_xlsx:
+            ruta_excel = os.path.join(ruta_carpeta, archivo)
+            workbook = excel.Workbooks.Open(ruta_excel)
+            worksheet = workbook.Sheets(1)
+
+            usedRange = worksheet.UsedRange
+            rowCount = usedRange.Rows.Count
+            columnCount = usedRange.Columns.Count
+
+            dataRows = rowCount - headerRow
+            if dataRows <= 0:
+                workbook.Close(False)
+                continue
+
+            numberOfChunks = int(ceil(dataRows / maxRowsPerFile))
+            baseName, _ = os.path.splitext(archivo)
+
+            for i in range(numberOfChunks):
+                newWorkbook = excel.Workbooks.Add()
+                newSheet = newWorkbook.Sheets(1)
+
+                header_range = worksheet.Range("A1").Resize(1, columnCount)
+                header_range.Copy(newSheet.Range("A1"))
+
+                startRow = (i * maxRowsPerFile) + 2
+                endRow = min(startRow + maxRowsPerFile - 1, rowCount)
+                rowsToCopy = endRow - startRow + 1
+
+                data_range = worksheet.Range(f"A{startRow}").Resize(rowsToCopy, columnCount)
+                data_range.Copy(newSheet.Range("A2"))
+
+                newFileName = f"{baseName}-{i+1}.xlsx"
+                newPath = os.path.join(ruta_carpeta, newFileName)
+
+                newWorkbook.SaveAs(newPath)
+                newWorkbook.Close()
+
+            workbook.Close(False)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Ocurrió un error al procesar los archivos Excel:\n{e}")
+        return
+    finally:
+        try:
+            excel.Quit()
+        except:
+            pass
+
+    messagebox.showinfo(
+        "Proceso terminado ✅",
+        "Los archivos Excel han sido divididos en bloques de 50 filas por archivo\n"
+        "(manteniendo encabezado en cada uno)."
+    )
+
+def procesar_csv_llaves_y_consolidado():
+    root = tk._default_root
+    progress_win = tk.Toplevel(root) if root is not None else tk.Tk()
+    progress_win.title("Progreso del proceso")
+    progress_win.geometry("420x110")
+    progress_win.resizable(False, False)
+    progress_win.attributes("-topmost", True)
+    progress_win.configure(bg="#FFFFFF")
+
+    progress_bar = ttk.Progressbar(progress_win, orient="horizontal", length=380, mode="determinate")
+    progress_bar.place(x=20, y=20)
+    progress_bar["minimum"] = 0
+    progress_bar["maximum"] = 100
+
+    label_progress = tk.Label(progress_win, text="0% completado", bg="#FFFFFF", fg="#263238")
+    label_progress.place(x=20, y=60)
+
+    def actualizar_progreso(porcentaje: int):
+        porcentaje = max(0, min(100, int(porcentaje)))
+        progress_bar["value"] = porcentaje
+        label_progress.config(text=f"{porcentaje}% completado")
+        progress_win.update_idletasks()
+
+    actualizar_progreso(0)
+
+    folder_path = filedialog.askdirectory(title="Selecciona la carpeta que contiene los archivos CSV")
+    if not folder_path:
+        messagebox.showwarning("Operación cancelada", "No se seleccionó ninguna carpeta.")
+        progress_win.destroy()
+        return
+
+    destino_path = os.path.join(folder_path, "llaves")
+    if not os.path.exists(destino_path):
+        os.makedirs(destino_path, exist_ok=True)
+
+    try:
+        excel = win32.Dispatch("Excel.Application")
+    except Exception as e:
+        progress_win.destroy()
+        messagebox.showerror("Error", f"No se pudo iniciar Excel COM:\n{e}")
+        return
+
+    excel.Visible = False
+    excel.DisplayAlerts = False
+
+    try:
+        # FASE 1: CSV -> XLSM
+        csv_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".csv")]
+        total_archivos = len(csv_files)
+        if total_archivos == 0:
+            messagebox.showwarning("Sin CSV", "No se encontraron archivos .csv en la carpeta seleccionada.")
+            excel.Quit()
+            progress_win.destroy()
+            return
+
+        contador = 0
+        for fname in csv_files:
+            csv_file = os.path.join(folder_path, fname)
+            base_name, _ = os.path.splitext(fname)
+            xlsm_path = os.path.join(destino_path, f"{base_name}.xlsm")
+
+            workbook = excel.Workbooks.Open(csv_file)
+            workbook.SaveAs(xlsm_path, 52)  # xlOpenXMLWorkbookMacroEnabled
+            workbook.Close(False)
+
+            contador += 1
+            porcentaje = int((contador / total_archivos) * 30)
+            actualizar_progreso(porcentaje)
+
+        messagebox.showinfo("Información", "FASE 1 completada. Aceptar para continuar.")
+
+        # Selección estado LEBU/MAIPO
+        def mostrar_opciones_estado():
+            dialog = tk.Toplevel(root if root is not None else progress_win)
+            dialog.title("Seleccionar Estado")
+            dialog.geometry("320x160")
+            dialog.resizable(False, False)
+            dialog.attributes("-topmost", True)
+            dialog.configure(bg="#FFFFFF")
+
+            lbl = tk.Label(dialog, text="¿Qué estado aplicar a todos los archivos?", bg="#FFFFFF", fg="#263238")
+            lbl.pack(pady=(15, 5))
+
+            estado = {"value": None}
+
+            btn_frame = tk.Frame(dialog, bg="#FFFFFF")
+            btn_frame.pack(pady=10)
+
+            def elegir_lebu():
+                estado["value"] = "ok3"
+                dialog.destroy()
+
+            def elegir_maipo():
+                estado["value"] = "ok2"
+                dialog.destroy()
+
+            b1 = tk.Button(
+                btn_frame, text="LEBU", width=10, command=elegir_lebu,
+                bg="#00A8E8", fg="white", relief="flat", cursor="hand2",
+                activebackground="#0086B8", activeforeground="white"
+            )
+            b1.pack(side="left", padx=15)
+
+            b2 = tk.Button(
+                btn_frame, text="MAIPO", width=10, command=elegir_maipo,
+                bg="#FF9800", fg="white", relief="flat", cursor="hand2",
+                activebackground="#F57C00", activeforeground="white"
+            )
+            b2.pack(side="right", padx=15)
+
+            dialog.grab_set()
+            dialog.wait_window()
+            return estado["value"]
+
+        estado_elegido = mostrar_opciones_estado()
+        if not estado_elegido:
+            messagebox.showwarning("Cancelado", "No se seleccionó estado. Proceso cancelado.")
+            excel.Quit()
+            progress_win.destroy()
+            return
+
+        # FASE 2: Procesar XLSM
+        xlsm_files = [f for f in os.listdir(destino_path) if f.lower().endswith(".xlsm")]
+        total_xlsm = len(xlsm_files)
+        contador = 0
+
+        for fname in xlsm_files:
+            xlsm_file = os.path.join(destino_path, fname)
+            workbook = excel.Workbooks.Open(xlsm_file)
+            ws = workbook.Sheets(1)
+
+            nombre_archivo, _ = os.path.splitext(fname)
+            cod_sociedad = nombre_archivo[:4] if len(nombre_archivo) >= 4 else "0000"
+
+            m = re.match(r"^(.*)_([^_]*)$", nombre_archivo)
+            if m:
+                nombre_proceso = m.group(1)
+            else:
+                nombre_proceso = nombre_archivo
+
+            fecha_raw = ""
+            for j in range(len(nombre_archivo) - 8, -1, -1):
+                sub = nombre_archivo[j:j+8]
+                if re.match(r"^\d{8}$", sub):
+                    fecha_raw = sub
+                    break
+
+            if len(fecha_raw) == 8:
+                yyyy = fecha_raw[0:4]
+                mm_ = fecha_raw[4:6]
+                dd_ = fecha_raw[6:8]
+                fecha_formateada = f"{dd_}-{mm_}-{yyyy}"
+            else:
+                fecha_formateada = "01-01-1900"
+
+            ws.Columns("A:B").Insert(-4159)
+            ws.Cells(1, 1).Value = "llaves"
+            ws.Cells(1, 2).Value = "sociedad"
+
+            ultima_fila = ws.Cells(ws.Rows.Count, 3).End(-4162).Row
+            col_rut = None
+            col_inicio_contrato = None
+            last_col = ws.Cells(1, ws.Columns.Count).End(-4159).Column
+
+            for col in range(1, last_col + 1):
+                header = ws.Cells(1, col).Value
+                if header == "RUT":
+                    col_rut = col
+                elif header == "Inicio de Contrato":
+                    col_inicio_contrato = col
+
+            for row in range(2, ultima_fila + 1):
+                ws.Cells(row, 2).Value = cod_sociedad
+
+            for row in range(2, ultima_fila + 1):
+                rut_val = ws.Cells(row, col_rut).Value if col_rut else ""
+                fecha_inicio_val = ws.Cells(row, col_inicio_contrato).Value if col_inicio_contrato else ""
+
+                fecha_inicio_c = "00000"
+                if hasattr(fecha_inicio_val, "ToOADate"):
+                    fecha_inicio_c = int(fecha_inicio_val.ToOADate())
+                else:
+                    if isinstance(fecha_inicio_val, (int, float)):
+                        fecha_inicio_c = int(fecha_inicio_val)
+                    elif isinstance(fecha_inicio_val, str) and re.match(r"^\d+$", fecha_inicio_val):
+                        fecha_inicio_c = fecha_inicio_val
+
+                rut_str = "" if rut_val is None else str(rut_val)
+                llave = f"{cod_sociedad}{rut_str}{fecha_inicio_c}"
+                ws.Cells(row, 1).NumberFormat = "@"
+                ws.Cells(row, 1).Value = llave
+
+            last_col = ws.Cells(1, ws.Columns.Count).End(-4159).Column
+            col_final = last_col + 1
+
+            ws.Cells(1, col_final).Value = "Nombre Proceso"
+            ws.Cells(1, col_final + 1).Value = "Fecha procesado"
+            ws.Cells(1, col_final + 2).Value = "Estado"
+
+            for row in range(2, ultima_fila + 1):
+                ws.Cells(row, col_final).Value = nombre_proceso
+                ws.Cells(row, col_final + 1).NumberFormat = "@"
+                ws.Cells(row, col_final + 1).Value = fecha_formateada
+                ws.Cells(row, col_final + 2).Value = estado_elegido
+
+            workbook.Save()
+            workbook.Close()
+
+            contador += 1
+            porcentaje = 30 + int((contador / total_xlsm) * 50)
+            actualizar_progreso(porcentaje)
+
+        messagebox.showinfo("Información", "FASE 2 completada. Aceptar para continuar.")
+
+        # FASE 3: Consolidado
+        consolidado_path = os.path.join(
+            destino_path,
+            f"Consolidado_{datetime.now().strftime('%d-%m-%Y')}.xlsx"
+        )
+
+        consolidado_libro = excel.Workbooks.Add()
+        consolidado_hoja = consolidado_libro.Sheets(1)
+        consolidado_hoja.Name = "Consolidado"
+
+        row_destino = 1
+        header_puesto = False
+
+        total_xlsm = len(xlsm_files)
+        contador = 0
+
+        for fname in xlsm_files:
+            archivo = os.path.join(destino_path, fname)
+            wb = excel.Workbooks.Open(archivo)
+            ws = wb.Sheets(1)
+
+            last_row = ws.Cells(ws.Rows.Count, 1).End(-4162).Row
+            last_col = ws.Cells(1, ws.Columns.Count).End(-4159).Column
+
+            if not header_puesto:
+                header_range = ws.Range(ws.Cells(1, 1), ws.Cells(1, last_col))
+                header_range.Copy(consolidado_hoja.Cells(1, 1))
+                row_destino = 2
+                header_puesto = True
+
+            if last_row > 1:
+                data_range = ws.Range(ws.Cells(2, 1), ws.Cells(last_row, last_col))
+                data_range.Copy(consolidado_hoja.Cells(row_destino, 1))
+                row_destino += (last_row - 1)
+
+            wb.Close(False)
+
+            contador += 1
+            porcentaje = 80 + int((contador / total_xlsm) * 20)
+            actualizar_progreso(porcentaje)
+
+        consolidado_libro.SaveAs(consolidado_path)
+        consolidado_libro.Close()
+
+        actualizar_progreso(100)
+        label_progress.config(text="Proceso terminado :)")
+        progress_win.update_idletasks()
+
+        messagebox.showinfo(
+            "Proceso completado ✅",
+            f"Archivos procesados con estado '{estado_elegido}'.\n"
+            f"Guardados en: {destino_path}\n"
+            f"Consolidado creado en: {consolidado_path}"
+        )
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Ocurrió un error durante el proceso:\n{e}")
+    finally:
+        try:
+            excel.Quit()
+        except:
+            pass
+        progress_win.after(1500, progress_win.destroy)
+
+# -------------------------------------------------
+# BOTONES DE AYUDA
+# -------------------------------------------------
+def ayuda_previred():
+    messagebox.showinfo(
+        "Ayuda - Generador de Reportes SAP PREVIRED",
+        "Módulo para procesos de PREVIRED / AFP / Isapres.\n\n"
+        "• Lee todos los TXT de SAP en una carpeta.\n"
+        "• Renombra muchas columnas (rut, nombres, AFP, salud, etc.).\n"
+        "• Filtra por cod_mov: 2, 3, 4, 6, 10, 11, 12.\n"
+        "• Mapea AFP a rut_pag_subs.\n"
+        "• Genera por cada TXT:\n"
+        "    - Excel COMPLETO.\n"
+        "    - Excel REDUCIDO con columnas clave.\n"
+        "• Ambos incluyen mes y año en el nombre.\n\n"
+        "Úsalo cuando necesites datos listos para PREVIRED."
+    )
+
+def ayuda_modo_simple():
+    messagebox.showinfo(
+        "Ayuda - Conversor TXT SAP → Excel (Modo Simple)",
+        "Versión simplificada del módulo PREVIRED.\n\n"
+        "• Lee TXT SAP de una carpeta.\n"
+        "• Renombra columnas importantes (rut, nombres, AFP, salud, fechas...).\n"
+        "• NO filtra por cod_mov.\n"
+        "• Mapea AFP a rut_pag_subs.\n"
+        "• Genera por cada TXT:\n"
+        "    - Excel COMPLETO.\n"
+        "    - Excel con COLUMNAS SELECCIONADAS.\n"
+        "• Nombres terminan en _completo.xlsx y _seleccionadas.xlsx.\n\n"
+        "Úsalo para un procesamiento general de TXT."
+    )
+
+def ayuda_campos_clave():
+    messagebox.showinfo(
+        "Ayuda - Conversor TXT SAP → Excel (Campos Clave)",
+        "Módulo más simple.\n\n"
+        "• Lee TXT SAP de una carpeta.\n"
+        "• Toma sólo un grupo reducido de columnas clave.\n"
+        "• Renombra esas columnas a nombres claros.\n"
+        "• Si falta alguna, se omite.\n"
+        "• Genera un solo Excel por TXT, con el mismo nombre base.\n\n"
+        "Úsalo cuando solo necesites datos esenciales."
+    )
+
+def ayuda_divisor_excel():
+    messagebox.showinfo(
+        "Ayuda - Dividir archivos Excel en bloques de 50 filas",
+        "• Pide una carpeta con archivos .xlsx.\n"
+        "• Para cada archivo:\n"
+        "    - Usa la primera hoja.\n"
+        "    - Mantiene la fila 1 como encabezado.\n"
+        "    - Divide las filas de datos en bloques de 50.\n"
+        "    - Crea nuevos archivos: baseName-1.xlsx, baseName-2.xlsx, etc.\n\n"
+        "Úsalo para fraccionar planillas grandes."
+    )
+
+def ayuda_llaves_consolidado():
+    messagebox.showinfo(
+        "Ayuda - Procesar CSV SAP → Llaves + Consolidado",
+        "Este módulo replica el script de PowerShell de llaves.\n\n"
+        "FASE 1:\n"
+        "  • Convierte todos los CSV en la carpeta a XLSM dentro de 'llaves'.\n\n"
+        "FASE 2:\n"
+        "  • Agrega columnas de llaves, sociedad, nombre proceso, fecha procesado y estado.\n"
+        "  • El estado se elige entre LEBU (ok3) y MAIPO (ok2).\n\n"
+        "FASE 3:\n"
+        "  • Crea un archivo 'Consolidado_dd-mm-aaaa.xlsx' con todos los registros.\n\n"
+        "Incluye una barra de progreso 0–100% para ver el avance."
+    )
+
+# -------------------------------------------------
+# INTERFAZ GRÁFICA CON SCROLL VISIBLES
+# -------------------------------------------------
+def crear_interfaz():
+    BG_COLOR       = "#E6ECF3"
+    CARD_BG        = "#FFFFFF"
+    PRIMARY_COLOR  = "#00A8E8"
+    ACCENT_ORANGE  = "#FF9800"
+    TEXT_COLOR     = "#1F2933"
+    SUBTEXT_COLOR  = "#6B7A8C"
+    BORDER_COLOR   = "#D0D7E2"
+    HELP_BUTTON_BG = "#ECEFF1"
+
+    root = tk.Tk()
+    root.title("Suite SAP - ECR Group")
+    root.configure(bg=BG_COLOR)
+
+    # Permitir redimensionar
+    root.resizable(True, True)
+    root.minsize(900, 600)
+
+    # Centrar ventana inicial
+    width, height = 1000, 650
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    x = int((screen_w / 2) - (width / 2))
+    y = int((screen_h / 2) - (height / 2))
+    root.geometry(f"{width}x{height}+{x}+{y}")
+
+    # Estilo Scrollbar para que se note más
+    style = ttk.Style(root)
+    try:
+        style.theme_use("default")
+    except:
+        pass
+    style.configure(
+        "Vertical.TScrollbar",
+        gripcount=0,
+        background="#B0BEC5",
+        troughcolor="#ECEFF1",
+        bordercolor="#90A4AE",
+        arrowcolor="#37474F",
+        relief="flat",
+        width=16
+    )
+
+    # Header
+    header = tk.Frame(root, bg=PRIMARY_COLOR, height=60)
+    header.pack(fill="x", side="top")
+
+    header_title = tk.Label(
+        header,
+        text="Suite SAP · RRHH / PREVIRED",
+        font=("Segoe UI Semibold", 16),
+        bg=PRIMARY_COLOR,
+        fg="white"
+    )
+    header_title.pack(side="left", padx=20, pady=10)
+
+    header_sub = tk.Label(
+        header,
+        text="ECR Group · Automatización de procesos",
+        font=("Segoe UI", 9),
+        bg=PRIMARY_COLOR,
+        fg="#E0F4FF"
+    )
+    header_sub.pack(side="left", padx=10, pady=20)
+
+    # Contenedor principal
+    container = tk.Frame(root, bg=BG_COLOR)
+    container.pack(expand=True, fill="both")
+
+    card = tk.Frame(
+        container,
+        bg=CARD_BG,
+        bd=0,
+        relief="flat",
+        highlightbackground=BORDER_COLOR,
+        highlightthickness=1
+    )
+    card.pack(padx=20, pady=20, fill="both", expand=True)
+
+    title = tk.Label(
+        card,
+        text="Procesador de Archivos SAP",
+        font=("Segoe UI Semibold", 15),
+        bg=CARD_BG,
+        fg=TEXT_COLOR
+    )
+    title.pack(pady=(18, 4))
+
+    subtitle = tk.Label(
+        card,
+        text="Elige el módulo que necesitas y la herramienta se encargará del resto.",
+        font=("Segoe UI", 10),
+        bg=CARD_BG,
+        fg=SUBTEXT_COLOR
+    )
+    subtitle.pack(pady=(0, 10))
+
+    separator = tk.Frame(card, bg=BORDER_COLOR, height=1)
+    separator.pack(fill="x", padx=40, pady=(0, 10))
+
+    # Zona con scroll para módulos
+    scroll_container = tk.Frame(card, bg=CARD_BG)
+    scroll_container.pack(fill="both", expand=True, padx=20, pady=(5, 10))
+
+    # Canvas + Scrollbar
+    canvas = tk.Canvas(
+        scroll_container,
+        bg=CARD_BG,
+        highlightthickness=0
+    )
+    v_scroll = ttk.Scrollbar(
+        scroll_container,
+        orient="vertical",
+        command=canvas.yview,
+        style="Vertical.TScrollbar"
+    )
+    canvas.configure(yscrollcommand=v_scroll.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    v_scroll.pack(side="left", fill="y", padx=(4, 0))
+
+    # Texto guía junto a la barra
+    lbl_scroll = tk.Label(
+        scroll_container,
+        font=("Segoe UI", 8, "bold"),
+        bg=CARD_BG,
+        fg=SUBTEXT_COLOR,
+        justify="center"
+    )
+    lbl_scroll.pack(side="left", padx=(6, 0))
+
+    modules_frame = tk.Frame(canvas, bg=CARD_BG)
+    modules_window = canvas.create_window((0, 0), window=modules_frame, anchor="nw")
+
+    def on_modules_configure(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    modules_frame.bind("<Configure>", on_modules_configure)
+
+    def on_card_configure(event):
+        # Ajusta el ancho del área interna al ancho del canvas
+        canvas.itemconfig(modules_window, width=event.width - 50)
+
+    canvas.bind("<Configure>", on_card_configure)
+
+    # Scroll con rueda del mouse
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    def crear_boton_modulo(parent, texto, comando, color_fondo, color_hover):
+        btn = tk.Button(
+            parent,
+            text=texto,
+            command=comando,
+            font=("Segoe UI", 10, "bold"),
+            bg=color_fondo,
+            fg="white",
+            relief="flat",
+            cursor="hand2",
+            padx=10,
+            pady=6,
+            activeforeground="white"
+        )
+
+        def on_enter(e):
+            btn["bg"] = color_hover
+
+        def on_leave(e):
+            btn["bg"] = color_fondo
+
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
+
+        return btn
+
+    def crear_boton_ayuda(parent, comando):
+        btn = tk.Button(
+            parent,
+            text="?",
+            command=comando,
+            font=("Segoe UI", 10, "bold"),
+            bg=HELP_BUTTON_BG,
+            fg=TEXT_COLOR,
+            activebackground="#CFD8DC",
+            activeforeground=TEXT_COLOR,
+            relief="flat",
+            cursor="hand2",
+            width=3
+        )
+        return btn
+
+    def crear_modulo(parent, titulo, descripcion, color, hover, comando, comando_ayuda):
+        frame = tk.Frame(
+            parent,
+            bg=CARD_BG,
+            bd=0,
+            highlightbackground=BORDER_COLOR,
+            highlightthickness=1
+        )
+        frame.pack(fill="x", pady=6)
+
+        color_strip = tk.Frame(frame, bg=color, width=6)
+        color_strip.pack(side="left", fill="y")
+
+        content = tk.Frame(frame, bg=CARD_BG)
+        content.pack(side="left", fill="both", expand=True, padx=10, pady=8)
+
+        top_row = tk.Frame(content, bg=CARD_BG)
+        top_row.pack(fill="x")
+
+        btn_main = crear_boton_modulo(top_row, titulo, comando, color, hover)
+        btn_main.pack(side="left", fill="x", expand=True)
+
+        btn_help = crear_boton_ayuda(top_row, comando_ayuda)
+        btn_help.pack(side="left", padx=(8, 0))
+
+        lbl_desc = tk.Label(
+            content,
+            text=descripcion,
+            font=("Segoe UI", 9),
+            bg=CARD_BG,
+            fg=SUBTEXT_COLOR,
+            justify="left"
+        )
+        lbl_desc.pack(anchor="w", pady=(6, 0))
+
+    # Módulos
+    crear_modulo(
+        modules_frame,
+        "Generador de Reportes SAP PREVIRED",
+        "Convierte TXT SAP en reportes Excel completos y reducidos, aplicando filtros de movimiento "
+        "y mapeos especiales para procesos PREVIRED, AFP e Isapres.",
+        PRIMARY_COLOR,
+        "#0086B8",
+        generar_reportes_sap_previred,
+        ayuda_previred
+    )
+
+    crear_modulo(
+        modules_frame,
+        "Conversor TXT SAP → Excel (Modo Simple)",
+        "Procesa TXT SAP y genera Excel completos y con columnas seleccionadas, sin filtros adicionales "
+        "ni sufijos de fecha en el nombre.",
+        ACCENT_ORANGE,
+        "#F57C00",
+        conversor_txt_sap_excel_modo_simple,
+        ayuda_modo_simple
+    )
+
+    crear_modulo(
+        modules_frame,
+        "Conversor TXT SAP → Excel (Campos Clave)",
+        "Extrae solo las columnas clave desde los TXT SAP y las convierte a Excel, "
+        "manteniendo el mismo nombre base del archivo original.",
+        "#90A4AE",
+        "#78909C",
+        conversor_txt_sap_excel_campos_clave,
+        ayuda_campos_clave
+    )
+
+    crear_modulo(
+        modules_frame,
+        "Dividir archivos Excel en bloques de 50 filas",
+        "Toma archivos .xlsx y los divide en varios archivos nuevos de hasta 50 filas de datos cada uno, "
+        "manteniendo el encabezado en cada archivo generado.",
+        "#4CAF50",
+        "#388E3C",
+        dividir_excels_en_bloques_50,
+        ayuda_divisor_excel
+    )
+
+    crear_modulo(
+        modules_frame,
+        "Procesar CSV SAP → Llaves + Consolidado",
+        "Convierte CSV a XLSM, genera llaves y estados (LEBU/MAIPO) y consolida todo en un único Excel "
+        "con todos los registros procesados.",
+        "#3F51B5",
+        "#303F9F",
+        procesar_csv_llaves_y_consolidado,
+        ayuda_llaves_consolidado
+    )
+
+    footer_separator = tk.Frame(card, bg=BORDER_COLOR, height=1)
+    footer_separator.pack(fill="x", padx=40, pady=(4, 4))
+
+    footer = tk.Label(
+        card,
+        text="ECR Group · Automatización de procesos SAP",
+        font=("Segoe UI", 8),
+        bg=CARD_BG,
+        fg=SUBTEXT_COLOR
+    )
+    footer.pack(side="bottom", pady=4)
+
+    root.mainloop()
+
+# -------------------------------------------------
+# MAIN
+# -------------------------------------------------
+if __name__ == "__main__":
+    crear_interfaz()
