@@ -1,0 +1,1046 @@
+import os
+import re
+from math import ceil
+from datetime import datetime
+import time
+from urllib.parse import unquote
+
+import pandas as pd
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk, simpledialog
+
+# ❌ ELIMINAMOS WIN32COM PARA EVITAR ERRORES EN EXE
+# import win32com.client as win32
+
+# ====== IMPORTS SOLO PARA MORA PREVISIONAL ======
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+# =======================================================
+
+
+# -------------------------------------------------
+# MAPEOS Y CONSTANTES (para módulos TXT→Excel)
+# -------------------------------------------------
+
+columnas_a_renombrar_simple = {
+    "Col_0": "rut",
+    "Col_1": "dv",
+    "Col_2": "ape_pat",
+    "Col_3": "ape_mat",
+    "Col_4": "nombres",
+    "Col_14": "cod_mov",
+    "Col_15": "Fecha_Desde",
+    "Col_16": "Fecha_Hasta",
+    "Col_25": "nom_AFP",
+    "Col_74": "cod_inst_salud",
+    "Col_102": "rut_pag_subs",
+    "Col_103": "dv_pag_subs"
+}
+
+map_afp_simple = {
+    "03": "76240079",
+    "05": "98000100",
+    "08": "76265736",
+    "07": "61603000",
+    "29": "98001200",
+    "33": "98000000",
+    "34": "76762250",
+    "35": "76960424"
+}
+
+# ====== LISTA DE RUTS PARA MORA PREVISIONAL ======
+RUTS_MORA = [
+    "77442825-9","76321607-1","76735330-8","76763932-5","76788431-1","76797635-6","76050133-6","76050147-6",
+    "76051499-3","76051556-6","76094565-K","76105192-K","76113552-K","76321619-5","76321632-2","76327984-7",
+    "76328014-4","76412920-2","76669710-0","76763931-7","76788433-8","76788435-4","76797638-0","78455410-4",
+    "96752100-0","96856670-9","96915660-1","99544100-4","99544110-1","99596530-5","99597000-7"
+]
+# =======================================================
+
+
+# -------------------------------------------------
+# FUNCIONES COMPARTIDAS
+# -------------------------------------------------
+def encontrar_columna_real(df, llave):
+    if llave in df.columns:
+        return llave
+    m = re.search(r'(\d+)', str(llave))
+    if m:
+        num = int(m.group(1))
+        if num in df.columns:
+            return num
+        for col in df.columns:
+            s = str(col)
+            mm = re.search(r'(\d+)', s)
+            if mm and int(mm.group(1)) == num:
+                return col
+    return None
+
+
+def normalizar_cod_afp(valor):
+    try:
+        return f"{int(valor):02d}"
+    except (ValueError, TypeError):
+        return None
+
+
+# -------------------------------------------------
+# BARRA DE PROGRESO GENÉRICA
+# -------------------------------------------------
+progress_win = None
+progress_bar = None
+progress_label = None
+
+def iniciar_progreso(max_value, titulo="Procesando...", mensaje="Por favor espere..."):
+    global progress_win, progress_bar, progress_label
+    root = tk._default_root
+
+    if progress_win is not None:
+        try:
+            progress_win.destroy()
+        except:
+            pass
+        progress_win = None
+
+    progress_win = tk.Toplevel(root) if root is not None else tk.Tk()
+    progress_win.title(titulo)
+    progress_win.geometry("420x120")
+    progress_win.resizable(False, False)
+    progress_win.attributes("-topmost", True)
+    progress_win.configure(bg="#FFFFFF")
+
+    lbl_msg = tk.Label(progress_win, text=mensaje, bg="#FFFFFF", fg="#263238")
+    lbl_msg.pack(pady=(10, 5))
+
+    progress_bar = ttk.Progressbar(
+        progress_win,
+        orient="horizontal",
+        length=380,
+        mode="determinate",
+        maximum=max_value
+    )
+    progress_bar.pack(pady=5)
+    progress_bar["value"] = 0
+
+    progress_label = tk.Label(progress_win, text="0% completado", bg="#FFFFFF", fg="#263238")
+    progress_label.pack(pady=(0, 5))
+
+    progress_win.update_idletasks()
+
+
+def actualizar_progreso(valor_actual):
+    global progress_win, progress_bar, progress_label
+    if progress_win is None or progress_bar is None:
+        return
+
+    max_val = progress_bar["maximum"] or 1
+    valor = max(0, min(max_val, valor_actual))
+    progress_bar["value"] = valor
+
+    porcentaje = int((valor / max_val) * 100)
+    if progress_label is not None:
+        progress_label.config(text=f"{porcentaje}% completado")
+
+    progress_win.update_idletasks()
+
+
+def finalizar_progreso():
+    global progress_win, progress_bar, progress_label
+    if progress_win is not None:
+        try:
+            progress_win.destroy()
+        except:
+            pass
+    progress_win = None
+    progress_bar = None
+    progress_label = None
+
+
+# -------------------------------------------------
+# HELPERS (SIN EXCEL COM): CSV + XLSX/XLSM
+# -------------------------------------------------
+EXTS_ENTRADA = (".csv", ".xlsx", ".xlsm", ".xls", ".xlsb")
+
+def listar_archivos_entrada(folder_path: str):
+    folder_path = unquote(os.path.abspath(folder_path))
+    files = []
+    for f in os.listdir(folder_path):
+        if f.startswith("~$"):
+            continue
+        if f.lower().endswith(EXTS_ENTRADA):
+            files.append(os.path.join(folder_path, f))
+    return files
+
+def leer_tabla_con_pandas(path: str) -> pd.DataFrame:
+    """
+    Lee CSV/XLSX/XLSM sin Excel COM.
+    - CSV: detecta separador ; o , y prueba encodings comunes (utf-8, cp1252, latin1)
+    - XLSX/XLSM: openpyxl
+    """
+    p = unquote(os.path.abspath(path))
+    ext = os.path.splitext(p)[1].lower()
+
+    if ext == ".csv":
+        # Detecta separador mirando primera línea (sin fallar por encoding)
+        first = ""
+        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+            try:
+                with open(p, "r", encoding=enc, errors="strict") as f:
+                    first = f.readline()
+                break
+            except UnicodeDecodeError:
+                continue
+        if not first:
+            # último recurso: leer con reemplazo
+            with open(p, "r", encoding="latin1", errors="replace") as f:
+                first = f.readline()
+
+        sep = ";" if first.count(";") >= first.count(",") else ","
+
+        # Intenta leer con varios encodings
+        last_err = None
+        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+            try:
+                return pd.read_csv(
+                    p,
+                    sep=sep,
+                    dtype=str,
+                    encoding=enc,
+                    engine="python",
+                    on_bad_lines="skip"  # evita que líneas rotas tumben todo
+                )
+            except Exception as e:
+                last_err = e
+
+        raise last_err
+
+    if ext in (".xlsx", ".xlsm"):
+        return pd.read_excel(p, engine="openpyxl", dtype=str)
+
+    raise ValueError(f"Formato no soportado: {ext}. Usa CSV/XLSX/XLSM o conviértelo antes.")
+
+
+def guardar_excel(df: pd.DataFrame, path_out: str):
+    out = unquote(os.path.abspath(path_out))
+    df.to_excel(out, index=False, engine="openpyxl")
+
+
+# -------------------------------------------------
+# MÓDULO 1: TXT → EXCEL (SOLO SELECCIONADAS - BÁSICO)
+# -------------------------------------------------
+def txt_solo_seleccionadas_basico():
+    messagebox.showinfo(
+        "TXT → Excel (Solo Seleccionadas - Básico)",
+        "Selecciona la carpeta que contiene los archivos TXT exportados desde SAP.\n\n"
+        "Se generará un archivo Excel por cada TXT, solo con columnas seleccionadas."
+    )
+
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con los archivos TXT de SAP")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    total_archivos = len(archivos_txt)
+    iniciar_progreso(total_archivos, titulo="TXT → Excel (Solo Seleccionadas - Básico)", mensaje="Procesando archivos TXT...")
+    actualizar_progreso(0)
+
+    for i, archivo in enumerate(archivos_txt, start=1):
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+        print(f"\nProcesando (básico): {archivo}")
+
+        try:
+            try:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+            except UnicodeDecodeError:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+
+            labels_a_seleccionar = []
+            mapa_renombrar = {}
+
+            for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+                col_real = encontrar_columna_real(df, llave)
+                if col_real is None:
+                    print(f"  - Advertencia: {llave} no encontrada y será omitida.")
+                else:
+                    labels_a_seleccionar.append(col_real)
+                    mapa_renombrar[col_real] = nuevo_nombre
+
+            if not labels_a_seleccionar:
+                print("  - Ninguna de las columnas solicitadas fue encontrada en este archivo. Se omite.")
+                continue
+
+            df_sel = df[labels_a_seleccionar].copy()
+            df_sel.rename(columns=mapa_renombrar, inplace=True)
+
+            ruta_excel = os.path.splitext(ruta_txt)[0] + "_basico.xlsx"
+            df_sel.to_excel(ruta_excel, index=False, engine="openpyxl")
+            print(f"  ✅ Guardado: {ruta_excel}")
+
+        except Exception as e:
+            print(f"  ❌ Error procesando {archivo}: {e}")
+        finally:
+            actualizar_progreso(i)
+
+    finalizar_progreso()
+    messagebox.showinfo("Proceso terminado ✅", "Se generaron archivos Excel con columnas seleccionadas (modo básico) para cada TXT.")
+
+
+# -------------------------------------------------
+# MÓDULO 2: TXT → EXCEL (COMPLETO + SELECCIONADAS + AFP)
+# -------------------------------------------------
+def txt_completo_y_seleccionadas_afp():
+    messagebox.showinfo(
+        "TXT → Excel (Completo + Seleccionadas + AFP)",
+        "Selecciona la carpeta que contiene los archivos TXT exportados desde SAP.\n\n"
+        "Por cada TXT se generarán:\n"
+        "  • Un archivo Excel completo.\n"
+        "  • Un archivo Excel solo con columnas seleccionadas.\n"
+        "Ambos con mapeo de AFP → rut_pag_subs."
+    )
+
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con los archivos TXT de SAP")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    total_archivos = len(archivos_txt)
+    iniciar_progreso(total_archivos, titulo="TXT → Excel (Completo + Seleccionadas + AFP)", mensaje="Procesando archivos TXT...")
+    actualizar_progreso(0)
+
+    for i, archivo in enumerate(archivos_txt, start=1):
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+        print(f"\nProcesando (completo + seleccionadas AFP): {archivo}")
+
+        try:
+            try:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+            except UnicodeDecodeError:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+
+            df_completo = df.copy()
+
+            for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+                col_real = encontrar_columna_real(df_completo, llave)
+                if col_real is not None:
+                    df_completo.rename(columns={col_real: nuevo_nombre}, inplace=True)
+
+            if "nom_AFP" in df_completo.columns:
+                df_completo["rut_pag_subs"] = df_completo["nom_AFP"].apply(
+                    lambda x: map_afp_simple.get(normalizar_cod_afp(x))
+                )
+            else:
+                df_completo["rut_pag_subs"] = None
+
+            salida_completo = os.path.splitext(ruta_txt)[0] + "_completo.xlsx"
+            if os.path.exists(salida_completo):
+                salida_completo = os.path.splitext(ruta_txt)[0] + "_completo_nuevo.xlsx"
+            df_completo.to_excel(salida_completo, index=False, engine="openpyxl")
+            print(f"  ✅ Guardado completo: {salida_completo}")
+
+            labels_a_seleccionar = []
+            mapa_renombrar = {}
+            for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+                col_real = encontrar_columna_real(df, llave)
+                if col_real is None:
+                    df[llave] = pd.NA
+                    col_real = llave
+                    print(f"  - Advertencia: {llave} no encontrada en {archivo}, se creará vacía.")
+                labels_a_seleccionar.append(col_real)
+                mapa_renombrar[col_real] = nuevo_nombre
+
+            df_sel = df[labels_a_seleccionar].copy()
+            df_sel.rename(columns=mapa_renombrar, inplace=True)
+
+            if "nom_AFP" in df_sel.columns:
+                df_sel["rut_pag_subs"] = df_sel["nom_AFP"].apply(
+                    lambda x: map_afp_simple.get(normalizar_cod_afp(x))
+                )
+            else:
+                df_sel["rut_pag_subs"] = None
+
+            salida_sel = os.path.splitext(ruta_txt)[0] + "_seleccionadas.xlsx"
+            if os.path.exists(salida_sel):
+                salida_sel = os.path.splitext(ruta_txt)[0] + "_seleccionadas_nuevo.xlsx"
+            df_sel.to_excel(salida_sel, index=False, engine="openpyxl")
+            print(f"  ✅ Guardado seleccionadas: {salida_sel}")
+
+        except Exception as e:
+            print(f"  ❌ Error procesando {archivo}: {e}")
+        finally:
+            actualizar_progreso(i)
+
+    finalizar_progreso()
+    messagebox.showinfo("Proceso terminado ✅", "Se generaron archivos completos y seleccionados (con mapeo AFP) para cada TXT.")
+
+
+# -------------------------------------------------
+# MÓDULO 3: TXT → EXCEL (SOLO SELECCIONADAS + AFP)
+# -------------------------------------------------
+def txt_solo_seleccionadas_afp():
+    messagebox.showinfo(
+        "TXT → Excel (Solo Seleccionadas + AFP)",
+        "Selecciona la carpeta que contiene los archivos TXT exportados desde SAP.\n\n"
+        "Se generará un archivo Excel por TXT con columnas seleccionadas y mapeo AFP → rut_pag_subs."
+    )
+
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con los archivos TXT de SAP")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    archivos_txt = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(".txt")]
+    if not archivos_txt:
+        messagebox.showwarning("Sin archivos TXT", "No se encontraron archivos .txt en la carpeta seleccionada.")
+        return
+
+    total_archivos = len(archivos_txt)
+    iniciar_progreso(total_archivos, titulo="TXT → Excel (Solo Seleccionadas + AFP)", mensaje="Procesando archivos TXT...")
+    actualizar_progreso(0)
+
+    for i, archivo in enumerate(archivos_txt, start=1):
+        ruta_txt = os.path.join(ruta_carpeta, archivo)
+        print(f"\nProcesando (solo seleccionadas AFP): {archivo}")
+
+        try:
+            try:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="latin-1", header=None)
+            except UnicodeDecodeError:
+                df = pd.read_csv(ruta_txt, sep=";", encoding="cp1252", header=None)
+
+            labels_a_seleccionar = []
+            mapa_renombrar = {}
+
+            for llave, nuevo_nombre in columnas_a_renombrar_simple.items():
+                col_real = encontrar_columna_real(df, llave)
+                if col_real is None:
+                    df[llave] = pd.NA
+                    col_real = llave
+                    print(f"  - Advertencia: {llave} no encontrada en {archivo}, se creará vacía.")
+                labels_a_seleccionar.append(col_real)
+                mapa_renombrar[col_real] = nuevo_nombre
+
+            df_sel = df[labels_a_seleccionar].copy()
+            df_sel.rename(columns=mapa_renombrar, inplace=True)
+
+            if "nom_AFP" in df_sel.columns:
+                df_sel["rut_pag_subs"] = df_sel["nom_AFP"].apply(
+                    lambda x: map_afp_simple.get(normalizar_cod_afp(x))
+                )
+            else:
+                df_sel["rut_pag_subs"] = None
+
+            salida = os.path.splitext(ruta_txt)[0] + "_seleccionadas_afp.xlsx"
+            if os.path.exists(salida):
+                salida = os.path.splitext(ruta_txt)[0] + "_seleccionadas_afp_nuevo.xlsx"
+            df_sel.to_excel(salida, index=False, engine="openpyxl")
+            print(f"  ✅ Guardado: {salida}")
+
+        except Exception as e:
+            print(f"  ❌ Error procesando {archivo}: {e}")
+        finally:
+            actualizar_progreso(i)
+
+    finalizar_progreso()
+    messagebox.showinfo("Proceso terminado ✅", "Se generaron archivos Excel con columnas seleccionadas y mapeo AFP para cada TXT.")
+
+
+# -------------------------------------------------
+# MÓDULO 4: DIVIDIR EN BLOQUES DE 50 (SIN EXCEL COM)
+# -------------------------------------------------
+def dividir_excels_en_bloques_50():
+    ruta_carpeta = filedialog.askdirectory(title="Selecciona la carpeta con archivos Excel/CSV")
+    if not ruta_carpeta:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta.")
+        return
+
+    ruta_carpeta = unquote(os.path.abspath(ruta_carpeta))
+    archivos = listar_archivos_entrada(ruta_carpeta)
+
+    if not archivos:
+        messagebox.showwarning("Sin archivos", "No se encontraron archivos en la carpeta seleccionada.")
+        return
+
+    carpeta_salida = os.path.join(ruta_carpeta, "split_50")
+    os.makedirs(carpeta_salida, exist_ok=True)
+
+    total = len(archivos)
+    iniciar_progreso(total, titulo="Dividiendo archivos", mensaje="Creando archivos de 50 filas...")
+    actualizar_progreso(0)
+
+    try:
+        for i, ruta in enumerate(archivos, start=1):
+            try:
+                ext = os.path.splitext(ruta)[1].lower()
+                if ext in (".xls", ".xlsb"):
+                    raise ValueError(f"Formato no soportado sin Excel: {ext}. Convierte a XLSX/CSV.")
+
+                df = leer_tabla_con_pandas(ruta)
+                if df.empty:
+                    actualizar_progreso(i)
+                    continue
+
+                base = os.path.splitext(os.path.basename(ruta))[0]
+                chunks = int(ceil(len(df) / 50))
+
+                for j in range(chunks):
+                    df_chunk = df.iloc[j*50:(j+1)*50].copy()
+                    out_name = f"{base}-{j+1}.xlsx"
+                    out_path = os.path.join(carpeta_salida, out_name)
+
+                    # evitar sobre-escritura
+                    if os.path.exists(out_path):
+                        k = 2
+                        while True:
+                            alt = os.path.join(carpeta_salida, f"{base}-{j+1}_{k}.xlsx")
+                            if not os.path.exists(alt):
+                                out_path = alt
+                                break
+                            k += 1
+
+                    guardar_excel(df_chunk, out_path)
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Archivo:\n{ruta}\n\nError:\n{e}")
+            finally:
+                actualizar_progreso(i)
+
+    finally:
+        finalizar_progreso()
+
+    messagebox.showinfo("Proceso terminado ✅", f"Listo. Archivos divididos en bloques de 50.\n\nSalida: {carpeta_salida}")
+
+
+# -------------------------------------------------
+# MÓDULO 5: BAJAS → LLAVES + CONSOLIDADO (SIN EXCEL COM)
+# -------------------------------------------------
+def procesar_csv_llaves_y_consolidado():
+    root = tk._default_root
+    progress_win_local = tk.Toplevel(root) if root is not None else tk.Tk()
+    progress_win_local.title("Progreso del proceso")
+    progress_win_local.geometry("420x110")
+    progress_win_local.resizable(False, False)
+    progress_win_local.attributes("-topmost", True)
+    progress_win_local.configure(bg="#FFFFFF")
+
+    progress_bar_local = ttk.Progressbar(progress_win_local, orient="horizontal", length=380, mode="determinate")
+    progress_bar_local.place(x=20, y=20)
+    progress_bar_local["maximum"] = 100
+    progress_bar_local["value"] = 0
+
+    label_progress = tk.Label(progress_win_local, text="0% completado", bg="#FFFFFF", fg="#263238")
+    label_progress.place(x=20, y=60)
+
+    def actualizar(p):
+        p = max(0, min(100, int(p)))
+        progress_bar_local["value"] = p
+        label_progress.config(text=f"{p}% completado")
+        progress_win_local.update_idletasks()
+
+    actualizar(0)
+
+    folder_path = filedialog.askdirectory(title="Selecciona la carpeta que contiene los archivos (CSV/XLSX/XLSM)")
+    if not folder_path:
+        messagebox.showwarning("Operación cancelada", "No se seleccionó ninguna carpeta.")
+        progress_win_local.destroy()
+        return
+
+    folder_path = unquote(os.path.abspath(folder_path))
+    destino_path = os.path.join(folder_path, "llaves")
+    os.makedirs(destino_path, exist_ok=True)
+
+    ok_num = simpledialog.askstring(
+        "Código OK",
+        "Ingresa el número para el estado (ej: 2, 3, 10).\n\nSe guardará como: ok<NÚMERO>",
+        parent=progress_win_local
+    )
+    if ok_num is None:
+        messagebox.showwarning("Cancelado", "No se ingresó código OK. Proceso cancelado.")
+        progress_win_local.destroy()
+        return
+
+    ok_num = ok_num.strip()
+    if not ok_num.isdigit():
+        messagebox.showerror("Dato inválido", "El código OK debe ser SOLO un número (ej: 2, 3, 10).")
+        progress_win_local.destroy()
+        return
+
+    estado_elegido = f"ok{ok_num}"
+
+    entradas = listar_archivos_entrada(folder_path)
+    entradas = [p for p in entradas if os.path.splitext(p)[1].lower() in (".csv", ".xlsx", ".xlsm")]
+    if not entradas:
+        messagebox.showwarning("Sin archivos", "No se encontraron CSV/XLSX/XLSM en la carpeta.")
+        progress_win_local.destroy()
+        return
+
+    try:
+        dfs = []
+        total = len(entradas)
+
+        for idx, ruta in enumerate(entradas, start=1):
+            df = leer_tabla_con_pandas(ruta)
+
+            nombre_archivo = os.path.splitext(os.path.basename(ruta))[0]
+            cod_sociedad = nombre_archivo[:4] if len(nombre_archivo) >= 4 else "0000"
+
+            m = re.match(r"^(.*)_([^_]*)$", nombre_archivo)
+            nombre_proceso = m.group(1) if m else nombre_archivo
+
+            fecha_raw = ""
+            for j in range(len(nombre_archivo) - 8, -1, -1):
+                sub = nombre_archivo[j:j+8]
+                if re.match(r"^\d{8}$", sub):
+                    fecha_raw = sub
+                    break
+            if len(fecha_raw) == 8:
+                yyyy, mm_, dd_ = fecha_raw[0:4], fecha_raw[4:6], fecha_raw[6:8]
+                fecha_formateada = f"{dd_}-{mm_}-{yyyy}"
+            else:
+                fecha_formateada = "01-01-1900"
+
+            # busca columnas por nombre (case-insensitive)
+            cols_lower = {c.lower().strip(): c for c in df.columns}
+            col_rut = cols_lower.get("rut", None)
+            col_inicio = None
+            for k in ["inicio de contrato", "inicio contrato", "fecha inicio contrato"]:
+                if k in cols_lower:
+                    col_inicio = cols_lower[k]
+                    break
+
+            rut_series = df[col_rut].fillna("").astype(str).str.strip() if col_rut else ""
+            inicio_series = df[col_inicio].fillna("").astype(str).str.strip() if col_inicio else ""
+
+            df.insert(0, "sociedad", cod_sociedad)
+            df.insert(0, "llaves", (cod_sociedad + rut_series.astype(str) + inicio_series.astype(str)).astype(str))
+
+            df["Nombre Proceso"] = nombre_proceso
+            df["Fecha procesado"] = fecha_formateada
+            df["Estado"] = estado_elegido
+
+            out_path = os.path.join(destino_path, f"{nombre_archivo}.xlsx")
+            guardar_excel(df, out_path)
+
+            dfs.append(df)
+            actualizar(int((idx / total) * 70))
+
+        # Consolidado
+        consolidado = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        consolidado_path = os.path.join(destino_path, f"Consolidado_{datetime.now().strftime('%d-%m-%Y')}.xlsx")
+        if not consolidado.empty:
+            guardar_excel(consolidado, consolidado_path)
+
+        actualizar(100)
+        messagebox.showinfo(
+            "Proceso completado ✅",
+            f"Archivos procesados con estado '{estado_elegido}'.\n"
+            f"Guardados en: {destino_path}\n"
+            f"Consolidado creado en: {consolidado_path}"
+        )
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Ocurrió un error durante el proceso:\n{e}")
+    finally:
+        progress_win_local.after(800, progress_win_local.destroy)
+
+
+# -------------------------------------------------
+# ALTAS + CONSOLIDADO (SIN LLAVES) (SIN EXCEL COM)
+# ✅ CORREGIDO: Fecha procesado = última modificación REAL del archivo original
+# -------------------------------------------------
+def procesar_csv_ok_y_consolidado_sin_llaves():
+    root = tk._default_root
+    progress_win_local = tk.Toplevel(root) if root is not None else tk.Tk()
+    progress_win_local.title("Progreso del proceso (Altas)")
+    progress_win_local.geometry("420x110")
+    progress_win_local.resizable(False, False)
+    progress_win_local.attributes("-topmost", True)
+    progress_win_local.configure(bg="#FFFFFF")
+
+    progress_bar_local = ttk.Progressbar(progress_win_local, orient="horizontal", length=380, mode="determinate")
+    progress_bar_local.place(x=20, y=20)
+    progress_bar_local["maximum"] = 100
+    progress_bar_local["value"] = 0
+
+    label_progress = tk.Label(progress_win_local, text="0% completado", bg="#FFFFFF", fg="#263238")
+    label_progress.place(x=20, y=60)
+
+    def actualizar(p):
+        p = max(0, min(100, int(p)))
+        progress_bar_local["value"] = p
+        label_progress.config(text=f"{p}% completado")
+        progress_win_local.update_idletasks()
+
+    actualizar(0)
+
+    folder_path = filedialog.askdirectory(title="Selecciona la carpeta que contiene los archivos (CSV/XLSX/XLSM)")
+    if not folder_path:
+        messagebox.showwarning("Operación cancelada", "No se seleccionó ninguna carpeta.")
+        progress_win_local.destroy()
+        return
+
+    folder_path = unquote(os.path.abspath(folder_path))
+    destino_path = os.path.join(folder_path, "Altas Procesadas")
+    os.makedirs(destino_path, exist_ok=True)
+
+    ok_num = simpledialog.askstring(
+        "Código OK",
+        "Ingresa el número para el estado (ej: 2, 3, 10).\n\nSe guardará como: ok<NÚMERO>",
+        parent=progress_win_local
+    )
+    if ok_num is None:
+        messagebox.showwarning("Cancelado", "No se ingresó código OK. Proceso cancelado.")
+        progress_win_local.destroy()
+        return
+
+    ok_num = ok_num.strip()
+    if not ok_num.isdigit():
+        messagebox.showerror("Dato inválido", "El código OK debe ser SOLO un número (ej: 2, 3, 10).")
+        progress_win_local.destroy()
+        return
+
+    estado_elegido = f"ok{ok_num}"
+
+    entradas = listar_archivos_entrada(folder_path)
+    entradas = [p for p in entradas if os.path.splitext(p)[1].lower() in (".csv", ".xlsx", ".xlsm")]
+    if not entradas:
+        messagebox.showwarning("Sin archivos", "No se encontraron CSV/XLSX/XLSM en la carpeta.")
+        progress_win_local.destroy()
+        return
+
+    try:
+        dfs = []
+        total = len(entradas)
+
+        for idx, ruta in enumerate(entradas, start=1):
+            df = leer_tabla_con_pandas(ruta)
+
+            nombre_archivo = os.path.splitext(os.path.basename(ruta))[0]
+
+            # Nombre Proceso: antes del último "_" si existe
+            m = re.match(r"^(.*)_([^_]*)$", nombre_archivo)
+            nombre_proceso = m.group(1) if m else nombre_archivo
+
+            # ✅ Fecha procesado = última modificación REAL del archivo original
+            try:
+                mtime = os.path.getmtime(ruta)
+                fecha_formateada = datetime.fromtimestamp(mtime).strftime("%d-%m-%Y")
+            except Exception:
+                fecha_formateada = datetime.now().strftime("%d-%m-%Y")
+
+            df["Nombre Proceso"] = nombre_proceso
+            df["Fecha procesado"] = fecha_formateada
+            df["Estado"] = estado_elegido
+
+            out_path = os.path.join(destino_path, f"{nombre_archivo}.xlsx")
+            guardar_excel(df, out_path)
+
+            dfs.append(df)
+            actualizar(int((idx / total) * 75))
+
+        consolidado = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        consolidado_path = os.path.join(destino_path, f"Consolidado_sin_llaves_{datetime.now().strftime('%d-%m-%Y')}.xlsx")
+        if not consolidado.empty:
+            guardar_excel(consolidado, consolidado_path)
+
+        actualizar(100)
+        messagebox.showinfo(
+            "Proceso completado ✅",
+            f"Archivos procesados con estado '{estado_elegido}'.\n"
+            f"Guardados en: {destino_path}\n"
+            f"Consolidado creado en: {consolidado_path}"
+        )
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Ocurrió un error durante el proceso:\n{e}")
+    finally:
+        progress_win_local.after(800, progress_win_local.destroy)
+
+
+# -------------------------------------------------
+# MÓDULO: CONSULTA MORA PREVISIONAL
+# -------------------------------------------------
+def consultar_mora_previsional():
+    messagebox.showinfo(
+        "Consulta Mora Previsional",
+        "Se consultará la mora previsional para una lista fija de RUTs.\n\n"
+        "A continuación, selecciona la carpeta donde se guardará el archivo Excel de resultados."
+    )
+
+    carpeta_destino = filedialog.askdirectory(title="Selecciona la carpeta destino para el archivo de resultados")
+    if not carpeta_destino:
+        messagebox.showwarning("Sin carpeta seleccionada", "No se seleccionó ninguna carpeta destino.")
+        return
+
+    driver = None
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service)
+        wait = WebDriverWait(driver, 4)
+        df_total = pd.DataFrame()
+
+        total_ruts = len(RUTS_MORA)
+        iniciar_progreso(total_ruts, titulo="Consulta Mora Previsional", mensaje="Consultando RUTs en la Dirección del Trabajo...")
+        actualizar_progreso(0)
+
+        for i, rut in enumerate(RUTS_MORA, start=1):
+            try:
+                driver.get("https://tramites.dirtrab.cl/webitel2013/MoraPrev/GetMoraPrev.aspx")
+
+                input_box = wait.until(EC.presence_of_element_located(
+                    (By.NAME, "ctl00$ctl00$ContentPlaceHolder1$ContentPlaceHolder1$tbxRut")
+                ))
+                input_box.clear()
+                input_box.send_keys(rut)
+                time.sleep(0.5)
+
+                buscar_btn = wait.until(EC.element_to_be_clickable(
+                    (By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_btnBuscar")
+                ))
+                buscar_btn.click()
+
+                table = wait.until(EC.presence_of_element_located(
+                    (By.ID, "ctl00_ctl00_ContentPlaceHolder1_ContentPlaceHolder1_gvListaMoraP")
+                ))
+                html = table.get_attribute("outerHTML")
+                df_tabla = pd.read_html(html)[0]
+                df_tabla["RUT consultado"] = rut
+                df_total = pd.concat([df_total, df_tabla], ignore_index=True)
+
+            except Exception as e:
+                print(f"❌ No se pudo consultar el RUT {rut}: {e}")
+
+            actualizar_progreso(i)
+
+        finalizar_progreso()
+
+        if not df_total.empty:
+            fecha_actual = datetime.now().strftime("%d-%m-%Y")
+            ruta_archivo = os.path.join(carpeta_destino, f"resultados_mora_previsional_{fecha_actual}.xlsx")
+            df_total.to_excel(ruta_archivo, index=False, engine="openpyxl")
+            messagebox.showinfo("Consulta completada", f"Se generó el archivo:\n\n{ruta_archivo}")
+        else:
+            messagebox.showwarning("Sin resultados", "No se obtuvieron resultados para ninguno de los RUT consultados.")
+
+    except Exception as e:
+        finalizar_progreso()
+        messagebox.showerror("Error", f"Ocurrió un error durante la consulta de mora previsional:\n{e}")
+    finally:
+        if driver is not None:
+            driver.quit()
+
+
+# -------------------------------------------------
+# AYUDAS
+# -------------------------------------------------
+def ayuda_previred():
+    messagebox.showinfo("Ayuda - TXT → Excel (Solo Seleccionadas - Básico)",
+                        "Módulo 1.\n• Lee TXT de SAP\n• Extrae columnas clave\n• Renombra columnas\n• 1 Excel por TXT\n\nNO mapea AFP.")
+
+def ayuda_modo_simple():
+    messagebox.showinfo("Ayuda - TXT → Excel (Completo + Seleccionadas + AFP)",
+                        "Módulo 2.\n• Por TXT crea 2 Excel (completo y seleccionadas)\n• Ambos con mapeo AFP → rut_pag_subs")
+
+def ayuda_campos_clave():
+    messagebox.showinfo("Ayuda - TXT → Excel (Solo Seleccionadas + AFP)",
+                        "Módulo 3.\n• 1 Excel por TXT\n• Solo columnas clave\n• Con mapeo AFP → rut_pag_subs")
+
+def ayuda_divisor_excel():
+    messagebox.showinfo("Ayuda - Dividir (sin Excel COM)",
+                        "• Soporta: CSV / XLSX / XLSM\n• Divide en bloques de 50\n• Salida: split_50\n\n"
+                        "XLS/XLSB no soportados sin Excel.")
+
+def ayuda_llaves_consolidado():
+    messagebox.showinfo("Ayuda - Bajas → Llaves + Consolidado (sin Excel COM)",
+                        "• Soporta: CSV / XLSX / XLSM\n• Genera llaves + sociedad + Estado ok<N>\n• Exporta .xlsx por archivo y consolidado final.")
+
+def ayuda_csv_ok_sin_llaves():
+    messagebox.showinfo("Ayuda - Altas + Consolidado (sin llaves, sin Excel COM)",
+                        "• Soporta: CSV / XLSX / XLSM\n• Agrega: Nombre Proceso / Fecha procesado / Estado\n• Crea Consolidado final.")
+
+def ayuda_mora_previsional():
+    messagebox.showinfo("Ayuda - Consulta Mora Previsional",
+                        "Consulta en la Dirección del Trabajo la mora previsional para una lista fija de RUTs y genera un Excel.")
+
+
+# -------------------------------------------------
+# INTERFAZ GRÁFICA
+# -------------------------------------------------
+def crear_interfaz():
+    BG_COLOR       = "#E6ECF3"
+    CARD_BG        = "#FFFFFF"
+    PRIMARY_COLOR  = "#00A8E8"
+    TEXT_COLOR     = "#1F2933"
+    SUBTEXT_COLOR  = "#6B7A8C"
+    BORDER_COLOR   = "#D0D7E2"
+    HELP_BUTTON_BG = "#ECEFF1"
+
+    root = tk.Tk()
+    root.title("Suite SAP - ECR Group")
+    root.configure(bg=BG_COLOR)
+
+    root.resizable(True, True)
+    root.minsize(900, 600)
+
+    width, height = 1000, 650
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    x = int((screen_w / 2) - (width / 2))
+    y = int((screen_h / 2) - (height / 2))
+    root.geometry(f"{width}x{height}+{x}+{y}")
+
+    header = tk.Frame(root, bg=PRIMARY_COLOR, height=60)
+    header.pack(fill="x", side="top")
+
+    header_title = tk.Label(header, text="Suite SAP · RRHH / PREVIRED",
+                            font=("Segoe UI Semibold", 16), bg=PRIMARY_COLOR, fg="white")
+    header_title.pack(side="left", padx=20, pady=10)
+
+    header_sub = tk.Label(header, text="ECR Group · Automatización de procesos",
+                          font=("Segoe UI", 9), bg=PRIMARY_COLOR, fg="#E0F4FF")
+    header_sub.pack(side="left", padx=10, pady=20)
+
+    container = tk.Frame(root, bg=BG_COLOR)
+    container.pack(expand=True, fill="both")
+
+    card = tk.Frame(container, bg=CARD_BG, bd=0, relief="flat",
+                    highlightbackground=BORDER_COLOR, highlightthickness=1)
+    card.pack(padx=20, pady=20, fill="both", expand=True)
+
+    title = tk.Label(card, text="Procesador de Archivos SAP",
+                     font=("Segoe UI Semibold", 15), bg=CARD_BG, fg=TEXT_COLOR)
+    title.pack(pady=(18, 4))
+
+    subtitle = tk.Label(card, text="Elige el módulo que necesitas y la herramienta se encargará del resto.",
+                        font=("Segoe UI", 10), bg=CARD_BG, fg=SUBTEXT_COLOR)
+    subtitle.pack(pady=(0, 10))
+
+    separator = tk.Frame(card, bg=BORDER_COLOR, height=1)
+    separator.pack(fill="x", padx=40, pady=(0, 10))
+
+    scroll_container = tk.Frame(card, bg=CARD_BG)
+    scroll_container.pack(fill="both", expand=True, padx=20, pady=(5, 10))
+
+    canvas = tk.Canvas(scroll_container, bg=CARD_BG, highlightthickness=0)
+    v_scroll = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=v_scroll.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    v_scroll.pack(side="left", fill="y", padx=(4, 0))
+
+    modules_frame = tk.Frame(canvas, bg=CARD_BG)
+    modules_window = canvas.create_window((0, 0), window=modules_frame, anchor="nw")
+
+    def on_modules_configure(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+    modules_frame.bind("<Configure>", on_modules_configure)
+
+    def on_card_configure(event):
+        canvas.itemconfig(modules_window, width=event.width - 50)
+    canvas.bind("<Configure>", on_card_configure)
+
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    def crear_boton_modulo(parent, texto, comando, color_fondo, color_hover):
+        btn = tk.Button(parent, text=texto, command=comando,
+                        font=("Segoe UI", 10, "bold"),
+                        bg=color_fondo, fg="white",
+                        relief="flat", cursor="hand2",
+                        padx=10, pady=6, activeforeground="white")
+
+        def on_enter(e): btn["bg"] = color_hover
+        def on_leave(e): btn["bg"] = color_fondo
+        btn.bind("<Enter>", on_enter)
+        btn.bind("<Leave>", on_leave)
+        return btn
+
+    def crear_boton_ayuda(parent, comando):
+        return tk.Button(parent, text="?", command=comando,
+                         font=("Segoe UI", 10, "bold"),
+                         bg=HELP_BUTTON_BG, fg=TEXT_COLOR,
+                         activebackground="#CFD8DC", activeforeground=TEXT_COLOR,
+                         relief="flat", cursor="hand2", width=3)
+
+    def crear_modulo(parent, titulo, descripcion, color, hover, comando, comando_ayuda):
+        frame = tk.Frame(parent, bg=CARD_BG, bd=0, highlightbackground=BORDER_COLOR, highlightthickness=1)
+        frame.pack(fill="x", pady=6)
+
+        color_strip = tk.Frame(frame, bg=color, width=6)
+        color_strip.pack(side="left", fill="y")
+
+        content = tk.Frame(frame, bg=CARD_BG)
+        content.pack(side="left", fill="both", expand=True, padx=10, pady=8)
+
+        top_row = tk.Frame(content, bg=CARD_BG)
+        top_row.pack(fill="x")
+
+        btn_main = crear_boton_modulo(top_row, titulo, comando, color, hover)
+        btn_main.pack(side="left", fill="x", expand=True)
+
+        btn_help = crear_boton_ayuda(top_row, comando_ayuda)
+        btn_help.pack(side="left", padx=(8, 0))
+
+        lbl_desc = tk.Label(content, text=descripcion, font=("Segoe UI", 9),
+                            bg=CARD_BG, fg=SUBTEXT_COLOR, justify="left")
+        lbl_desc.pack(anchor="w", pady=(6, 0))
+
+    crear_modulo(modules_frame, "TXT → Excel (Solo Seleccionadas - Básico)",
+                 "Convierte TXT SAP a Excel con columnas clave (sin mapeo AFP).",
+                 "#00A8E8", "#0086B8", txt_solo_seleccionadas_basico, ayuda_previred)
+
+    crear_modulo(modules_frame, "TXT → Excel (Completo + Seleccionadas + AFP)",
+                 "Por cada TXT genera Excel completo + seleccionadas, ambos con mapeo AFP.",
+                 "#FF9800", "#F57C00", txt_completo_y_seleccionadas_afp, ayuda_modo_simple)
+
+    crear_modulo(modules_frame, "TXT → Excel (Solo Seleccionadas + AFP)",
+                 "Convierte TXT SAP a Excel con columnas clave + mapeo AFP → rut_pag_subs.",
+                 "#90A4AE", "#78909C", txt_solo_seleccionadas_afp, ayuda_campos_clave)
+
+    crear_modulo(modules_frame, "Dividir archivos (CSV/XLSX/XLSM) en bloques de 50 filas",
+                 "Divide archivos sin Excel COM. Evita errores al convertir a EXE.",
+                 "#4CAF50", "#388E3C", dividir_excels_en_bloques_50, ayuda_divisor_excel)
+
+    crear_modulo(modules_frame, "Bajas → Llaves + Consolidado",
+                 "Sin Excel COM: CSV/XLSX/XLSM → llaves + consolidado.",
+                 "#3F51B5", "#303F9F", procesar_csv_llaves_y_consolidado, ayuda_llaves_consolidado)
+
+    crear_modulo(modules_frame, "Altas + Consolidado",
+                 "Sin Excel COM: agrega Estado ok<N> y consolida (sin llaves).",
+                 "#009688", "#00796B", procesar_csv_ok_y_consolidado_sin_llaves, ayuda_csv_ok_sin_llaves)
+
+    crear_modulo(modules_frame, "Consulta Mora Previsional DT",
+                 "Consulta mora previsional en la web DT y genera un Excel con resultados.",
+                 "#9C27B0", "#7B1FA2", consultar_mora_previsional, ayuda_mora_previsional)
+
+    footer_separator = tk.Frame(card, bg=BORDER_COLOR, height=1)
+    footer_separator.pack(fill="x", padx=40, pady=(4, 4))
+
+    footer = tk.Label(card, text="ECR Group · Automatización de procesos SAP",
+                      font=("Segoe UI", 8), bg=CARD_BG, fg=SUBTEXT_COLOR)
+    footer.pack(side="bottom", pady=4)
+
+    root.mainloop()
+
+
+# -------------------------------------------------
+# MAIN
+# -------------------------------------------------
+if __name__ == "__main__":
+    crear_interfaz()
